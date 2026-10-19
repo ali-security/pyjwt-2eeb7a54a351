@@ -14,6 +14,9 @@ from jwt.exceptions import (
 from .utils import crypto_required, key_path, no_crypto_required
 
 if has_crypto:
+    from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     from jwt.algorithms import ECAlgorithm, HMACAlgorithm, OKPAlgorithm, RSAAlgorithm
 
 
@@ -167,6 +170,28 @@ class TestPyJWK:
         assert jwk.key_type == "OKP"
         assert isinstance(jwk.Algorithm, OKPAlgorithm)
         assert jwk.algorithm_name == "EdDSA"
+
+    @crypto_required
+    @pytest.mark.parametrize("curve", ("Ed25519", "Ed448"))
+    def test_should_reject_okp_key_with_foreign_private_key(self, curve):
+        with open(key_path(f"jwk_okp_key_{curve}.json")) as keyfile:
+            victim = json.loads(keyfile.read())
+
+        # A consistent private JWK still loads.
+        PyJWK.from_dict(victim, algorithm="EdDSA")
+
+        key_cls = Ed25519PrivateKey if curve == "Ed25519" else Ed448PrivateKey
+        attacker = OKPAlgorithm.to_jwk(key_cls.generate(), as_dict=True)
+
+        # The victim's public "x" paired with the attacker's private "d" must
+        # not be imported as the attacker's key under the victim's identity.
+        forged = {"kty": "OKP", "crv": curve, "x": victim["x"], "d": attacker["d"]}
+
+        with pytest.raises(InvalidKeyError):
+            PyJWK.from_dict(forged, algorithm="EdDSA")
+
+        with pytest.raises(InvalidKeyError):
+            PyJWK.from_json(json.dumps({**forged, "alg": "EdDSA"}))
 
     @crypto_required
     def test_from_dict_should_throw_exception_if_arg_is_invalid(self):
